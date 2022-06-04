@@ -1,1 +1,6 @@
 language: node_js
+install:
+  - npm ci
+script:
+  - npm run build --if-present
+  - npm test
