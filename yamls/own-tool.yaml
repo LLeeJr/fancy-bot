@@ -1,0 +1,9 @@
+ci:
+  language: node
+  install:
+    - npm install
+  build:
+    - npm run build --if-present
+    - npm test
+
+
