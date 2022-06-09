@@ -42,7 +42,7 @@ module.exports = (app) => {
       return;
     }
 
-    await createCommitStatus(context, context.payload.pull_request.head.sha, "success", "succefully fetched yaml", "custom-ci");
+    await createCommitStatus(context, context.payload.pull_request.head.sha, "success", "successfully fetched yaml", "custom-ci");
 
     // Check with provider is listed in ci
     if (yaml.ci.provider === "github-actions") {
