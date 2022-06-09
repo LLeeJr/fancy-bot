@@ -14,7 +14,7 @@ module.exports = (app) => {
   });
 
   app.on(["pull_request.opened", "pull_request.synchronize", "pull_request.reopened"] , async (context) => {
-    await createCommitStatus(context, "pending", "fetch yaml from branch", "custom-ci");
+    await createCommitStatus(context, context.payload.pull_request.head.sha, "pending", "fetch yaml from branch", "custom-ci");
 
     // Get yaml file from pr branch and decode it
     const yaml = await context.octokit.rest.repos.getContent({
@@ -31,11 +31,12 @@ module.exports = (app) => {
 
     app.log.info(yaml);
 
-    await createCommitStatus(context, "success", "succefully fetched yaml", "custom-ci");
+    await createCommitStatus(context, context.payload.pull_request.head.sha, "success", "succefully fetched yaml", "custom-ci");
 
     // Check with provider is listed in ci
     if (yaml.ci.provider === "github-actions") {
       app.log.info("chose github-actions")
+      await createCommitStatus(context, context.payload.pull_request.head.sha, "pending", "starting github actions workflow", "custom-ci/github-actions");
       await githubActionsCI(context, yaml.ci.workflow_file_name);
     } else {
       app.log.info("chose custom ci")
@@ -44,7 +45,13 @@ module.exports = (app) => {
   });
 
   app.on("workflow_run.completed", async (context) => {
-    app.log.info(context.payload)
+    if (context.payload.workflow_run.conclusion === "success") {
+      await createCommitStatus(context, context.payload.workflow_run.head_sha, "success", "github actions workflow was successful", "custom-ci/github-actions")
+    }
+
+    app.log.info(`Conclusion: ${context.payload.workflow_run.conclusion}`)
+
+    // TODO when CI is github actions, retrieve ci_cd.yml again and check how to do cd
   });
 
   // For more information on building apps:
@@ -84,11 +91,11 @@ async function githubActionsCI(context, workflow_id) {
   });
 }
 
-async function createCommitStatus(context, state, description, contextString) {
+async function createCommitStatus(context, sha, state, description, contextString) {
   await context.octokit.rest.repos.createCommitStatus({
     owner: context.repo().owner,
     repo: context.repo().repo,
-    sha: context.payload.pull_request.head.sha,
+    sha: sha,
     state: state,
     description: description,
     context: contextString
