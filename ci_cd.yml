@@ -1,8 +1,7 @@
 ci:
   language: node
-  install:
+  steps:
     - npm install
-  build:
     - npm run build --if-present
     - npm test
 cd:
