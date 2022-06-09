@@ -1,6 +1,6 @@
 ci:
   provider: github-actions
-  workflow_name: Node.js CI
+  workflow_file_name: learn-github-actions.yml
 cd:
 
 
