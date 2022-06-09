@@ -25,9 +25,7 @@ module.exports = (app) => {
       ref: context.payload.pull_request.head.ref
     })
         .then(result => readYaml(result.data.content))
-        .catch(error => {
-          return error.name;
-        });
+        .catch(error => error.name);
 
     app.log.info(`After fetching yaml: ${yaml}`);
 
@@ -44,18 +42,23 @@ module.exports = (app) => {
 
     await createCommitStatus(context, context.payload.pull_request.head.sha, "success", "successfully fetched yaml", "custom-ci");
 
-    // Check with provider is listed in ci
+    // Check if a provider was chosen if not use own ci tool
+    if (yaml.ci.provider === undefined) {
+      app.log.info("chose custom ci");
+      return;
+    }
+
+    // Check which provider should be triggered for ci
     if (yaml.ci.provider === "github-actions") {
       app.log.info("chose github-actions")
       await createCommitStatus(context, context.payload.pull_request.head.sha, "pending", "starting github actions workflow", "custom-ci/github-actions");
+      // TODO maybe multiple workflows?
       await githubActionsCI(context, yaml.ci.workflow_file_name);
-    } else {
-      app.log.info("chose custom ci")
     }
-
   });
 
   app.on("workflow_run.completed", async (context) => {
+    // TODO what happens when github action fails?
     if (context.payload.workflow_run.conclusion === "success") {
       await createCommitStatus(context, context.payload.workflow_run.head_sha, "success", "github actions workflow was successful", "custom-ci/github-actions")
     }
@@ -64,12 +67,6 @@ module.exports = (app) => {
 
     // TODO when CI is github actions, retrieve ci_cd.yml again and check how to do cd
   });
-
-  // For more information on building apps:
-  // https://probot.github.io/docs/
-
-  // To get your app running against GitHub, see:
-  // https://probot.github.io/docs/development/
 };
 
 function callCommand() {
@@ -82,13 +79,14 @@ function readYaml(content) {
   const yaml = require('js-yaml');
 
   // Remove all line breaks
-  const withoutLineBreaks = content.replaceAll("\n", "");
+  const withoutLineBreaks = content.replace(/\n/g, "");
 
   // Decode base64 to string and return yaml, or throw exception on error
   try {
-    const decoded = atob(withoutLineBreaks);
+    const decoded = Buffer.from(withoutLineBreaks, 'base64').toString();
     return yaml.load(decoded);
   } catch (e) {
+    console.log(e)
     // create custom error for choosing correct commit status text
     const error = new Error("validating failed");
     error.name = "ValidationError";
