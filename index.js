@@ -14,7 +14,7 @@ module.exports = (app) => {
   });
 
   app.on(["pull_request.opened", "pull_request.synchronize", "pull_request.reopened"] , async (context) => {
-    await createCommitStatus(context, "pending", "fetch yaml from branch", "custom-ci")
+    await createCommitStatus(context, "pending", "fetch yaml from branch", "custom-ci");
 
     // Get yaml file from pr branch and decode it
     const yaml = await context.octokit.rest.repos.getContent({
@@ -29,13 +29,14 @@ module.exports = (app) => {
           app.log.error(error);
         });
 
-    app.log.info(yaml)
+    app.log.info(yaml);
 
-    await createCommitStatus(context, "success", "succefully fetched yaml", "custom-ci")
+    await createCommitStatus(context, "success", "succefully fetched yaml", "custom-ci");
 
     // Check with provider is listed in ci
     if (yaml.ci.provider === "github-actions") {
       app.log.info("chose github-actions")
+      await githubActionsCI(context);
     } else {
       app.log.info("chose custom ci")
     }
@@ -68,15 +69,19 @@ function readYaml(content) {
   // Decode base64 to string and return yaml as json format, or throw exception on error
   try {
     const decoded = atob(withoutLineBreaks);
-
     return yaml.load(decoded);
   } catch (e) {
     throw e
   }
 }
 
-function githubActionsCI() {
-
+async function githubActionsCI(context, workflow_id) {
+  await context.octokit.actions.createWorkflowDispatch({
+    owner: context.repo().owner,
+    repo: context.repo().repo,
+    workflow_id: workflow_id,
+    ref: context.payload.pull_request.head.ref
+  });
 }
 
 async function createCommitStatus(context, state, description, contextString) {
@@ -87,5 +92,5 @@ async function createCommitStatus(context, state, description, contextString) {
     state: state,
     description: description,
     context: contextString
-  })
+  });
 }
