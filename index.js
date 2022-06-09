@@ -6,8 +6,6 @@ module.exports = (app) => {
   // Your code here
   app.log.info("Yay, the app was loaded!");
 
-  app.log.info(callCommand())
-
   app.on("issues.opened", async (context) => {
     const issueComment = context.issue({
       body: "Thanks for opening this issue!",
@@ -15,18 +13,41 @@ module.exports = (app) => {
     return context.octokit.issues.createComment(issueComment);
   });
 
-  app.on("pull_request", async (context) => {
+  app.on(["pull_request.opened", "pull_request.synchronize", "pull_request.reopened"] , async (context) => {
     // check yamls for which provider should be called for testing
-    app.log.info(context.payload)
+    //app.log.info(context.payload)
+
+    await context.octokit.rest.repos.getContent({
+      owner: context.repo().owner,
+      repo: context.repo().repo,
+      path: 'ci_cd.yml',
+      ref: context.payload.pull_request.head.ref
+    }).then(result => {
+      // Decode yaml content
+      const yaml = readYaml(result.data.content);
+
+      app.log.info(yaml)
+
+      // Check with provider is listed in ci
+      if (yaml.ci.provider === "github-actions") {
+        app.log.info("chose github-actions")
+      } else {
+        app.log.info("chose custom ci")
+      }
+
+
+    }).catch(error => {
+      // TODO create status with file not found or smth
+      app.log.error(error);
+    })
+
 
     //const doc = readYaml();
-  })
+  });
 
   app.on("workflow_run.completed", async (context) => {
     app.log.info(context.payload)
-  })
-
-
+  });
 
   // For more information on building apps:
   // https://probot.github.io/docs/
@@ -41,15 +62,22 @@ function callCommand() {
   return execSync('docker -v && git --version').toString();
 }
 
-function readYaml() {
+function readYaml(content) {
   const yaml = require('js-yaml');
-  const fs   = require('fs');
 
-// Get document, or throw exception on error
+  // Remove all line breaks
+  const withoutLineBreaks = content.replaceAll("\n", "");
+
+  // Decode base64 to string and return yaml as json format, or throw exception on error
   try {
-    const doc = yaml.load(fs.readFileSync('/yamls/github-actions.yml', 'utf8'));
-    console.log(doc);
+    const decoded = atob(withoutLineBreaks);
+
+    return yaml.load(decoded);
   } catch (e) {
-    console.log(e);
+    throw e
   }
+}
+
+function githubActionsCI() {
+
 }
