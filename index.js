@@ -14,9 +14,9 @@ module.exports = (app) => {
   });
 
   app.on(["pull_request.opened", "pull_request.synchronize", "pull_request.reopened"] , async (context) => {
-    // check yamls for which provider should be called for testing
-    //app.log.info(context.payload)
+    await createCommitStatus(context, "pending", "fetch yaml from branch", "custom-ci")
 
+    // Get yaml file from pr branch and decode it
     const yaml = await context.octokit.rest.repos.getContent({
       owner: context.repo().owner,
       repo: context.repo().repo,
@@ -30,6 +30,8 @@ module.exports = (app) => {
         });
 
     app.log.info(yaml)
+
+    await createCommitStatus(context, "success", "succefully fetched yaml", "custom-ci")
 
     // Check with provider is listed in ci
     if (yaml.ci.provider === "github-actions") {
@@ -75,4 +77,15 @@ function readYaml(content) {
 
 function githubActionsCI() {
 
+}
+
+async function createCommitStatus(context, state, description, contextString) {
+  await context.octokit.rest.repos.createCommitStatus({
+    owner: context.repo().owner,
+    repo: context.repo().repo,
+    sha: context.payload.pull_request.head.sha,
+    state: state,
+    description: description,
+    context: contextString
+  })
 }
