@@ -17,32 +17,27 @@ module.exports = (app) => {
     // check yamls for which provider should be called for testing
     //app.log.info(context.payload)
 
-    await context.octokit.rest.repos.getContent({
+    const yaml = await context.octokit.rest.repos.getContent({
       owner: context.repo().owner,
       repo: context.repo().repo,
       path: 'ci_cd.yml',
       ref: context.payload.pull_request.head.ref
-    }).then(result => {
-      // Decode yaml content
-      const yaml = readYaml(result.data.content);
-
-      app.log.info(yaml)
-
-      // Check with provider is listed in ci
-      if (yaml.ci.provider === "github-actions") {
-        app.log.info("chose github-actions")
-      } else {
-        app.log.info("chose custom ci")
-      }
-
-
-    }).catch(error => {
-      // TODO create status with file not found or smth
-      app.log.error(error);
     })
+        .then(result => readYaml(result.data.content))
+        .catch(error => {
+          // TODO create status with file not found or smth
+          app.log.error(error);
+        });
 
+    app.log.info(yaml)
 
-    //const doc = readYaml();
+    // Check with provider is listed in ci
+    if (yaml.ci.provider === "github-actions") {
+      app.log.info("chose github-actions")
+    } else {
+      app.log.info("chose custom ci")
+    }
+
   });
 
   app.on("workflow_run.completed", async (context) => {
