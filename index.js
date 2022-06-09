@@ -2,6 +2,7 @@
  * This is the main entrypoint to your Probot app
  * @param {import('probot').Probot} app
  */
+const {ProbotOctokit} = require("probot");
 module.exports = (app) => {
   // Your code here
   app.log.info("Yay, the app was loaded!");
@@ -25,11 +26,21 @@ module.exports = (app) => {
     })
         .then(result => readYaml(result.data.content))
         .catch(error => {
-          // TODO create status with file not found or smth
-          app.log.error(error);
+          return error.name;
         });
 
-    app.log.info(yaml);
+    app.log.info(`After fetching yaml: ${yaml}`);
+
+    // differentiate between two errors
+    // one for failing to fetch yaml from repo
+    if (yaml === "HttpError") {
+      await createCommitStatus(context, context.payload.pull_request.head.sha, "error", "failed fetching yaml from this branch", "custom-ci");
+      return;
+    // the other for failing to decoding or returning data as yaml
+    } else if (yaml === "ValidationError") {
+      await createCommitStatus(context, context.payload.pull_request.head.sha, "error", "failed validating yaml", "custom-ci");
+      return;
+    }
 
     await createCommitStatus(context, context.payload.pull_request.head.sha, "success", "succefully fetched yaml", "custom-ci");
 
@@ -73,12 +84,15 @@ function readYaml(content) {
   // Remove all line breaks
   const withoutLineBreaks = content.replaceAll("\n", "");
 
-  // Decode base64 to string and return yaml as json format, or throw exception on error
+  // Decode base64 to string and return yaml, or throw exception on error
   try {
     const decoded = atob(withoutLineBreaks);
     return yaml.load(decoded);
   } catch (e) {
-    throw e
+    // create custom error for choosing correct commit status text
+    const error = new Error("validating failed");
+    error.name = "ValidationError";
+    throw error;
   }
 }
 
