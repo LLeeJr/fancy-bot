@@ -36,7 +36,7 @@ module.exports = (app) => {
     // Check with provider is listed in ci
     if (yaml.ci.provider === "github-actions") {
       app.log.info("chose github-actions")
-      await githubActionsCI(context, yaml.ci.workflow_id);
+      await githubActionsCI(context, yaml.ci.workflow_file_name);
     } else {
       app.log.info("chose custom ci")
     }
