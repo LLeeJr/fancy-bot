@@ -137,7 +137,7 @@ function createDockerfile(yaml, token, branch, owner, repoName) {
   dockerfile += `RUN git clone --branch ${branch} https://x-access-token:${token}@github.com/${owner}/${repoName}.git\n`
 
   // Remove next line to force error
-  // dockerfile += `WORKDIR ${repoName}/\n`
+  dockerfile += `WORKDIR ${repoName}/\n`
 
   for (let step of yaml.ci.steps) {
     dockerfile += `RUN ${step}\n`;
