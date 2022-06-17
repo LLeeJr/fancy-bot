@@ -4,29 +4,10 @@
  */
 // const {ProbotOctokit} = require("probot");
 const fs = require("fs");
-const yaml = require('js-yaml');
-const { execSync } = require('child_process');
-
-function getInstallationToken() {
-  // TODO
-  return "token";
-}
-
-function createDockerfile(yaml, token, branch, owner, repoName) {
-  let dockerfile = `FROM node:16-slim\n`; // `FROM ${yaml.ci.language}`;
-  dockerfile += "RUN apt-get update\nRUN apt-get install git\n"
-  dockerfile += `RUN git clone --branch ${branch} https://x-access-token:${token}@github.com/${owner}/${repoName}.git\n`
-
-  for (let step of yaml.ci.steps) {
-    dockerfile += `RUN ${step}\n`;
-  }
-
-  fs.mkdirSync(`./Dockerfiles/${repoName}`, { recursive: true}, (err) => {
-    app.log.error(err);
-  });
-
-  fs.writeFileSync(`./Dockerfiles/${repoName}/Dockerfile`, dockerfile);
-}
+const yaml = require("js-yaml");
+const { execSync } = require("child_process");
+// TODO create yaml or smth
+const tokenMap = new Map();
 
 module.exports = (app) => {
   // Your code here
@@ -42,13 +23,14 @@ module.exports = (app) => {
   app.on(["pull_request.opened", "pull_request.synchronize", "pull_request.reopened"] , async (context) => {
     const headSha = context.payload.pull_request.head.sha;
     const branch = context.payload.pull_request.head.ref;
+    const repoName = context.repo().repo;
 
-    await createCommitStatus(context, headSha, "pending", "fetch yaml from branch", "custom-ci");
+    await createCommitStatus(context, headSha, "pending", "fetch yaml from branch", "custom-ci/pre-build");
 
     // Get yaml file from pr branch and decode it
     const yaml = await context.octokit.rest.repos.getContent({
       owner: context.repo().owner,
-      repo: context.repo().repo,
+      repo: repoName,
       path: 'ci_cd.yml',
       ref: branch
     })
@@ -60,26 +42,32 @@ module.exports = (app) => {
     // differentiate between two errors
     // one for failing to fetch yaml from repo
     if (yaml === "HttpError") {
-      await createCommitStatus(context, headSha, "error", "failed fetching yaml from this branch", "custom-ci");
+      await createCommitStatus(context, headSha, "error", "failed fetching yaml from this branch", "custom-ci/pre-build");
       return;
     // the other for failing to decoding or returning data as yaml
     } else if (yaml === "ValidationError") {
-      await createCommitStatus(context, headSha, "error", "failed validating yaml", "custom-ci");
+      await createCommitStatus(context, headSha, "error", "failed validating yaml", "custom-ci/pre-build");
       return;
     }
 
     // TODO validation of yaml
 
-    await createCommitStatus(context, headSha, "success", "successfully fetched and validated yaml", "custom-ci");
+    await createCommitStatus(context, headSha, "success", "successfully fetched and validated yaml", "custom-ci/pre-build");
 
     // Check if a provider was chosen if not use own ci tool
     if (yaml.ci.provider === undefined) {
       app.log.info("chose custom ci");
 
-      // Create Dockerfile with given data
-      let token = getInstallationToken()
+      await createCommitStatus(context, headSha, "pending", "starting build/test process", "custom-ci/build");
 
-      createDockerfile(yaml, token, branch, context.repo().owner, context.repo().repo);
+      // Create Dockerfile with given data
+      let token = await getInstallationToken(context);
+      createDockerfile(yaml, token, branch, context.repo().owner, repoName);
+
+      // Create Image from Dockerfile and execute build/test commands
+      let result = createImageAndLog(repoName, branch);
+
+      await createCommitStatus(context, headSha, result.state, result.description, "custom-ci/build");
 
       return;
     }
@@ -105,12 +93,88 @@ module.exports = (app) => {
   });
 };
 
-// callCommand('docker build -f ci/node.Dockerfile -t test .').then(() => {
-//   console.info("Docker build done")
-// }).catch(error => console.error(error));
+async function getInstallationToken(context) {
+  const installations = await context.octokit.rest.apps.listInstallations().then(r => r.data);
 
-async function callCommand(command) {
-  return execSync('docker -v && git --version').toString();
+  const installation_id = installations[0].id
+
+  let nullOrExpired = true;
+
+  // if token exists, check if it's still valid
+  if (tokenMap.get(installation_id) !== undefined) {
+    // Installation token expires after one hour
+    let d1 = new Date();
+    let d2 = new Date(tokenMap.get(installation_id).expires_at).setMinutes(0);
+
+    nullOrExpired = d1 > d2;
+  }
+
+  // if token doesn't exist or is expired, get new token, save it and return it
+  if (nullOrExpired) {
+    console.log("null or expired")
+    const data = await context.octokit.rest.apps.createInstallationAccessToken({
+      installation_id: installation_id
+    }).then(r => r.data);
+
+    tokenMap.set(installation_id, data)
+
+    return data.token;
+  } else {
+    console.log("existing")
+    return tokenMap.get(installation_id).token;
+  }
+}
+
+function createDockerfile(yaml, token, branch, owner, repoName) {
+  let dockerfile = `FROM node:16-slim\n`; // `FROM ${yaml.ci.language}`;
+  dockerfile += "RUN apt-get update\nRUN apt-get -y install git\n"
+  dockerfile += `RUN git clone --branch ${branch} https://x-access-token:${token}@github.com/${owner}/${repoName}.git\n`
+
+  // Remove next line to force error
+  dockerfile += `WORKDIR ${repoName}/\n`
+
+  for (let step of yaml.ci.steps) {
+    dockerfile += `RUN ${step}\n`;
+  }
+
+  fs.mkdirSync(`./Dockerfiles/${repoName}/${branch}`, {recursive: true});
+
+  fs.writeFileSync(`./Dockerfiles/${repoName}/${branch}/Dockerfile`, dockerfile);
+}
+
+function createImageAndLog(repoName, branch) {
+  let result, state, description;
+  try {
+    result = callCommand(`docker build -t ${repoName}/${branch} -f ./Dockerfiles/${repoName}/${branch}/Dockerfile .`);
+
+    fs.writeFileSync(`./Dockerfiles/${repoName}/${branch}/log.txt`, result);
+
+    state = "success";
+    description = 'Build and tests were successfully completed';
+
+    try {
+      callCommand(`docker image rm ${repoName}/${branch}`)
+    } catch (e) {
+      console.log("Help! Couldn't delete docker image")
+    }
+  } catch (e) {
+    fs.writeFileSync(`./Dockerfiles/${repoName}/${branch}/log.txt`, e.message);
+
+    let index1 = e.message.indexOf("------", 0);
+    let index2 = e.message.indexOf("------", index1 + 1);
+
+    state = "error";
+    description = `Failed building/ testing at following line: ${e.message.substring(index1 + 7, index2)}`
+  }
+
+  return {
+    state: state,
+    description: description
+  }
+}
+
+function callCommand(command) {
+  return execSync(command).toString();
 }
 
 function readYaml(content) {
