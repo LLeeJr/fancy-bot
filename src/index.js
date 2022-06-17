@@ -69,6 +69,12 @@ module.exports = (app) => {
 
       await createCommitStatus(context, headSha, result.state, result.description, "custom-ci/build");
 
+      if (result.state === "error") {
+        const params = context.issue({ body: "ERROR LOG:\n" + result.log });
+
+        await context.octokit.issues.createComment(params);
+      }
+
       return;
     }
 
@@ -131,7 +137,7 @@ function createDockerfile(yaml, token, branch, owner, repoName) {
   dockerfile += `RUN git clone --branch ${branch} https://x-access-token:${token}@github.com/${owner}/${repoName}.git\n`
 
   // Remove next line to force error
-  dockerfile += `WORKDIR ${repoName}/\n`
+  // dockerfile += `WORKDIR ${repoName}/\n`
 
   for (let step of yaml.ci.steps) {
     dockerfile += `RUN ${step}\n`;
@@ -143,7 +149,7 @@ function createDockerfile(yaml, token, branch, owner, repoName) {
 }
 
 function createImageAndLog(repoName, branch) {
-  let result, state, description;
+  let result, state, description, log;
   try {
     result = callCommand(`docker build -t ${repoName}/${branch} -f ./Dockerfiles/${repoName}/${branch}/Dockerfile .`);
 
@@ -160,16 +166,17 @@ function createImageAndLog(repoName, branch) {
   } catch (e) {
     fs.writeFileSync(`./Dockerfiles/${repoName}/${branch}/log.txt`, e.message);
 
-    let index1 = e.message.indexOf("------", 0);
-    let index2 = e.message.indexOf("------", index1 + 1);
+    //console.error("ERROR MESSSAGE", e.message);
 
+    log = e.message;
     state = "error";
-    description = `Failed building/ testing at following line: ${e.message.substring(index1 + 7, index2)}`
+    description = `Failed building/ testing. See log comment for more details`;
   }
 
   return {
     state: state,
-    description: description
+    description: description,
+    log: log,
   }
 }
 
