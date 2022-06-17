@@ -1,7 +1,9 @@
 #!/bin/bash
 
-npm start &
+dockerd-entrypoint.sh &
 
-dockerd-entrypoint.sh
+sleep 5
+
+npm start
 
 wait
