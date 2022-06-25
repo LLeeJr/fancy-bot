@@ -4,7 +4,7 @@ const myProbotApp = require("../src");
 const { Probot, ProbotOctokit } = require("probot");
 // Requiring our fixtures
 const payload = require("./fixtures/issues.opened");
-const issueCreatedBody = { body: "Thanks for opening this issue!" };
+const issueCreatedBody = { body: "Thanks for opening this issue" };
 const fs = require("fs");
 const path = require("path");
 
