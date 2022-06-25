@@ -152,12 +152,12 @@ function createImageAndLog(steps, repoName, branch) {
   let state, description, log;
 
   try {
-    callCommand(`docker build -t ${repoName}/${branch} -f ./Dockerfiles/${repoName}/${branch}/Dockerfile .`, repoName, branch);
+    callCommand(`docker build -t ${repoName}/${branch} -f ./Dockerfiles/${repoName}/${branch}/Dockerfile .`, getLogOptions(repoName, branch));
 
     state = "success";
     description = 'Build and tests were successfully completed';
     try {
-      callCommand(`docker image rm ${repoName}/${branch}`, repoName, branch);
+      callCommand(`docker image rm ${repoName}/${branch}`, {});
     } catch (e) {
       console.log("Help! Couldn't delete docker image");
     }
@@ -192,13 +192,17 @@ function createImageAndLog(steps, repoName, branch) {
   }
 }
 
-function callCommand(command, repoName, branch) {
-  return execSync(command, {stdio: [
-      0,
-      fs.openSync(`./Dockerfiles/${repoName}/${branch}/out.log`, 'w'),
-      fs.openSync(`./Dockerfiles/${repoName}/${branch}/err.log`, 'w')
-    ]
-  }).toString();
+function getLogOptions(repoName, branch) {
+  return {stdio: [
+    0,
+    fs.openSync(`./Dockerfiles/${repoName}/${branch}/out.log`, 'w'),
+    fs.openSync(`./Dockerfiles/${repoName}/${branch}/err.log`, 'w')
+  ]
+  }
+}
+
+function callCommand(command, logOptions) {
+  return execSync(command, logOptions);
 }
 
 function readYaml(content) {
