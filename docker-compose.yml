@@ -1,0 +1,9 @@
+version: '3.8'
+services:
+  fancy-bot:
+    build:
+      context: .
+    container_name: fancy-bot
+    env_file:
+      - .env
+    privileged: true
