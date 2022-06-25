@@ -65,7 +65,7 @@ module.exports = (app) => {
       createDockerfile(yaml, token, branch, context.repo().owner, repoName);
 
       // Create Image from Dockerfile and execute build/test commands
-      let result = createImageAndLog(repoName, branch);
+      let result = createImageAndLog(yaml.ci.steps, repoName, branch);
 
       await createCommitStatus(context, headSha, result.state, result.description, "custom-ci/build");
 
@@ -148,27 +148,39 @@ function createDockerfile(yaml, token, branch, owner, repoName) {
   fs.writeFileSync(`./Dockerfiles/${repoName}/${branch}/Dockerfile`, dockerfile);
 }
 
-function createImageAndLog(repoName, branch) {
-  let result, state, description, log;
-  try {
-    result = callCommand(`docker build -t ${repoName}/${branch} -f ./Dockerfiles/${repoName}/${branch}/Dockerfile .`);
+function createImageAndLog(steps, repoName, branch) {
+  let state, description, log;
 
-    fs.writeFileSync(`./Dockerfiles/${repoName}/${branch}/log.txt`, result);
+  try {
+    callCommand(`docker build -t ${repoName}/${branch} -f ./Dockerfiles/${repoName}/${branch}/Dockerfile .`, repoName, branch);
 
     state = "success";
     description = 'Build and tests were successfully completed';
-
     try {
-      callCommand(`docker image rm ${repoName}/${branch}`)
+      callCommand(`docker image rm ${repoName}/${branch}`, repoName, branch);
     } catch (e) {
-      console.log("Help! Couldn't delete docker image")
+      console.log("Help! Couldn't delete docker image");
     }
   } catch (e) {
-    fs.writeFileSync(`./Dockerfiles/${repoName}/${branch}/log.txt`, e.message);
+    const errLog = fs.readFileSync(`./Dockerfiles/${repoName}/${branch}/err.log`, 'utf8');
 
-    //console.error("ERROR MESSSAGE", e.message);
+    const outLog = fs.readFileSync(`./Dockerfiles/${repoName}/${branch}/out.log`, 'utf8')
 
-    log = e.message;
+    // Search for which step failed
+    let stepIndex = -1;
+    let stringIndex = -1;
+    for (let step of steps) {
+      if (outLog.indexOf(step) !== -1) {
+        stepIndex++;
+        stringIndex = outLog.indexOf(step);
+      } else {
+        break;
+      }
+    }
+
+    const outLogShortened = outLog.substring(stringIndex + steps[stepIndex].length);
+
+    log = errLog + outLogShortened;
     state = "error";
     description = `Failed building/ testing. See log comment for more details`;
   }
@@ -180,8 +192,13 @@ function createImageAndLog(repoName, branch) {
   }
 }
 
-function callCommand(command) {
-  return execSync(command).toString();
+function callCommand(command, repoName, branch) {
+  return execSync(command, {stdio: [
+      0,
+      fs.openSync(`./Dockerfiles/${repoName}/${branch}/out.log`, 'w'),
+      fs.openSync(`./Dockerfiles/${repoName}/${branch}/err.log`, 'w')
+    ]
+  }).toString();
 }
 
 function readYaml(content) {
