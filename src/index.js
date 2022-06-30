@@ -8,6 +8,7 @@ const yaml = require("js-yaml");
 const { execSync } = require("child_process");
 const {Mutex} = require("async-mutex");
 const tokenMap = new Map();
+const yamlMap = new Map();
 let cdRun = [];
 const mutex = new Mutex();
 
@@ -31,7 +32,7 @@ module.exports = (app) => {
     await createCommitStatus(context, headSha, "pending", "fetch yaml from branch", "custom-ci/pre-build");
 
     // Get yaml file from pr branch and decode it
-    const yaml = retrieveYaml(context, repoName, branch);
+    const yaml = await retrieveYaml(context, repoName, branch);
 
     app.log.info("After fetching yaml:");
 
@@ -49,6 +50,16 @@ module.exports = (app) => {
     }
 
     // TODO validation of yaml
+
+    // Cache the yaml
+    const release = await mutex.acquire();
+    try {
+      yamlMap.set([context.repo().owner, repoName, branch].join('_'), yaml)
+    } finally {
+      release()
+    }
+
+    console.log(yamlMap);
 
     await createCommitStatus(context, headSha, "success", "successfully fetched and validated yaml", "custom-ci/pre-build");
 
@@ -81,7 +92,7 @@ module.exports = (app) => {
       }
 
       // do cd
-      await cd(yaml, context, headSha);
+      await cd(yaml, context, headSha, branch);
 
       return;
     }
@@ -91,7 +102,7 @@ module.exports = (app) => {
       app.log.info("chose github-actions")
       await createCommitStatus(context, headSha, "pending", "starting github actions workflow", "custom-ci/github-actions");
       // TODO maybe multiple workflows?
-      const errorMsg = await doGithubActions(context, yaml.ci.workflow_file_name).catch(error => error.message);
+      const errorMsg = await doGithubActions(context, yaml.ci.workflow_file_name, branch).catch(error => error.message);
 
       if (errorMsg !== undefined) {
         const params = context.issue({body: "ERROR LOG:\n" + errorMsg});
@@ -107,9 +118,10 @@ module.exports = (app) => {
     // TODO what happens if conclusion isn't success?
     app.log.info(`Conclusion: ${context.payload.workflow_run.conclusion}`);
 
-    const identifier = [context.repo().owner, context.repo().repo, context.payload.workflow_run.head_branch].join['_'];
+    const identifier = [context.repo().owner, context.repo().repo, context.payload.workflow_run.head_branch].join('_');
+    const headSha = context.payload.workflow_run.head_sha;
 
-    const release = await mutex.acquire();
+    let release = await mutex.acquire();
     let isCDRun = false;
     try {
       if (cdRun.indexOf(identifier) !== -1) {
@@ -123,14 +135,24 @@ module.exports = (app) => {
     if (context.payload.workflow_run.conclusion === "success") {
 
       if (isCDRun) {
-        await createCommitStatus(context, context.payload.workflow_run.head_sha, "success", "github actions workflow was successful", "custom-cd/github-actions");
+        await createCommitStatus(context, headSha, "success", "github actions workflow was successful", "custom-cd/github-actions");
         return;
       }
 
-      await createCommitStatus(context, context.payload.workflow_run.head_sha, "success", "github actions workflow was successful", "custom-ci/github-actions");
+      await createCommitStatus(context, headSha, "success", "github actions workflow was successful", "custom-ci/github-actions");
     }
 
     // TODO when CI is github actions, retrieve ci_cd.yml again and check how to do cd
+    // Read yaml from cache
+    let yaml;
+    release = await mutex.acquire();
+    try {
+      yaml = yamlMap.get(identifier);
+    } finally {
+      release();
+    }
+
+    await cd(yaml, context, headSha, context.payload.workflow_run.head_branch)
   });
 };
 
@@ -146,7 +168,7 @@ async function retrieveYaml(context, repoName, branch) {
       .catch(error => error.name);
 }
 
-async function cd(yaml, context, headSha) {
+async function cd(yaml, context, headSha, branch) {
   const provider = yaml.cd.provider;
 
   // deploy to heroku
@@ -161,14 +183,14 @@ async function cd(yaml, context, headSha) {
 
     const release = await mutex.acquire();
     try {
-      cdRun.push([context.repo().owner, context.repo().repo, context.payload.pull_request.head.ref].join['_']);
+      cdRun.push([context.repo().owner, context.repo().repo, branch].join('_'));
     } finally {
       release()
     }
 
     await createCommitStatus(context, headSha, "pending", "starting github actions workflow", "custom-cd/github-actions");
 
-    const errorMsg = await doGithubActions(context, yaml.cd.workflow_file_name).catch(error => error.message);
+    const errorMsg = await doGithubActions(context, yaml.cd.workflow_file_name, branch).catch(error => error.message);
 
     if (errorMsg !== undefined) {
       const params = context.issue({body: "ERROR LOG:\n" + errorMsg});
@@ -308,12 +330,12 @@ function readYaml(content) {
   }
 }
 
-async function doGithubActions(context, workflow_id) {
+async function doGithubActions(context, workflow_id, branch) {
   await context.octokit.actions.createWorkflowDispatch({
     owner: context.repo().owner,
     repo: context.repo().repo,
     workflow_id: workflow_id,
-    ref: context.payload.pull_request.head.ref
+    ref: branch
   });
 }
 
