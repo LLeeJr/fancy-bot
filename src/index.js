@@ -41,11 +41,15 @@ module.exports = (app) => {
       release();
     }
 
+    if (yaml === undefined) {
+      // get yaml?
+    }
+
     // headSha = context.payload.after
 
-    if (yaml.cd.branch === branch) {
+    /*if (yaml.cd.branch === branch) {
       //await cd(yaml, context, headSha, branch)
-    }
+    }*/
 
   })
 
@@ -89,8 +93,6 @@ module.exports = (app) => {
     } finally {
       release()
     }
-
-    console.log(yamlMap);
 
     await createCommitStatus(context, headSha, "success", "successfully fetched and validated yaml", "custom-ci/pre-build");
 
@@ -177,7 +179,6 @@ module.exports = (app) => {
       await createCommitStatus(context, headSha, "success", "github actions workflow was successful", "custom-ci/github-actions");
     }
 
-    // TODO when CI is github actions, retrieve ci_cd.yml again and check how to do cd
     // Read yaml from cache
     let yaml;
     release = await mutex.acquire();
@@ -279,7 +280,7 @@ async function getInstallationToken(context) {
 }
 
 function createDockerfile(yaml, token, branch, owner, repoName) {
-  let dockerfile = `FROM node:16-slim\n`; // `FROM ${yaml.ci.language}`;
+  let dockerfile = `FROM ${yaml.ci.language}\n`;
   dockerfile += "RUN apt-get update\nRUN apt-get -y install git\n"
   dockerfile += `RUN git clone --branch ${branch} https://x-access-token:${token}@github.com/${owner}/${repoName}.git\n`
 
