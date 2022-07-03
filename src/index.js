@@ -7,8 +7,10 @@ const fs = require("fs");
 const yaml = require("js-yaml");
 const { execSync } = require("child_process");
 const {Mutex} = require("async-mutex");
+
 const tokenMap = new Map();
 const yamlMap = new Map();
+const cdBranch = new Map();
 let cdRun = [];
 const mutex = new Mutex();
 
@@ -23,6 +25,29 @@ module.exports = (app) => {
     });
     return context.octokit.issues.createComment(issueComment);
   });
+
+  app.on("push", async (context) => {
+    app.log.info(context.payload)
+
+    const branch = context.payload.ref.split("/")[2];
+    const identifier = [context.repo().owner, context.repo().repo, branch].join('_');
+
+    // Read yaml from cache
+    let yaml;
+    release = await mutex.acquire();
+    try {
+      yaml = yamlMap.get(identifier);
+    } finally {
+      release();
+    }
+
+    // headSha = context.payload.after
+
+    if (yaml.cd.branch === branch) {
+      //await cd(yaml, context, headSha, branch)
+    }
+
+  })
 
   app.on(["pull_request.opened", "pull_request.synchronize", "pull_request.reopened"] , async (context) => {
     const headSha = context.payload.pull_request.head.sha;
@@ -45,11 +70,17 @@ module.exports = (app) => {
       return;
     // the other for failing to decoding or returning data as yaml
     } else if (yaml === "ValidationError") {
-      await createCommitStatus(context, headSha, "error", "failed validating yaml", "custom-ci/pre-build");
+      await createCommitStatus(context, headSha, "error", "converting of yaml failed", "custom-ci/pre-build");
       return;
     }
 
     // TODO validation of yaml
+    const isValid = validateYaml(yaml);
+
+    if (!isValid) {
+      await createCommitStatus(context, headSha, "error", "validation of yaml failed, please check the docs!", "custom-ci/pre-build");
+      return;
+    }
 
     // Cache the yaml
     const release = await mutex.acquire();
@@ -91,8 +122,12 @@ module.exports = (app) => {
         return;
       }
 
-      // do cd
-      await cd(yaml, context, headSha, branch);
+      // merge pr when yaml says merge auto
+      if (yaml.cd.merge === "auto") {
+
+      }
+
+      // await cd(yaml, context, headSha, branch)
 
       return;
     }
@@ -152,7 +187,11 @@ module.exports = (app) => {
       release();
     }
 
-    await cd(yaml, context, headSha, context.payload.workflow_run.head_branch)
+    // merge pr for which the ci run was executed
+    if (yaml.cd.merge === "auto") {
+      // retrieve which pr should be merged
+    }
+    // await cd(yaml, context, headSha, context.payload.workflow_run.head_branch)
   });
 };
 
@@ -348,4 +387,42 @@ async function createCommitStatus(context, sha, state, description, contextStrin
     description: description,
     context: contextString
   });
+}
+
+function validateYaml(yaml) {
+  try {
+    // check ci part
+    // requirements for own ci
+    if (yaml.ci.provider === undefined) {
+      if (yaml.ci.language === undefined || yaml.ci.steps === undefined) {
+        return false;
+      }
+      // github actions requirements
+    } else if (yaml.ci.provider === "github actions") {
+      if (yaml.ci.workflow_file_name === undefined) {
+        return false;
+      }
+    }
+
+    // check cd part
+    // if (yaml.cd.merge === undefined || yaml.cd.branch === undefined) {
+    //   return false;
+    // } These fields are optional doesn't have to be checked
+
+    // requirements for own cd
+    if (yaml.cd.provider === undefined) {
+      if (yaml.cd.heroku_api_key === undefined || yaml.cd.heroku_email === undefined || yaml.cd.heroku_app_name === undefined) {
+        return false;
+      }
+      // github actions requirements
+    }else if (yaml.ci.provider === "github actions") {
+      if (yaml.ci.workflow_file_name === undefined) {
+        return false;
+      }
+    }
+  } catch (e) {
+    return false
+  }
+
+  return true;
 }

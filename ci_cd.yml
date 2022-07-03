@@ -5,5 +5,8 @@ ci:
     - npm run build --if-present
     - npm test
 cd:
+  heroku_api_key: "heroku api key"
+  heroku_app_name: "heroku app name" #Must be unique in Heroku
+  heroku_email: "heroku email"
 
 
