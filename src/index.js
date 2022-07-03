@@ -7,11 +7,12 @@ const fs = require("fs");
 const yaml = require("js-yaml");
 const { execSync } = require("child_process");
 const {Mutex} = require("async-mutex");
+// const utils = require("./utils");
 
 const tokenMap = new Map();
 const yamlMap = new Map();
-const cdBranch = new Map();
 let cdRun = [];
+let ciRunPR = new Map();
 const mutex = new Mutex();
 
 // Probot
@@ -27,30 +28,19 @@ module.exports = (app) => {
   });
 
   app.on("push", async (context) => {
-    app.log.info(context.payload)
+    //app.log.info(context.payload)
 
     const branch = context.payload.ref.split("/")[2];
-    const identifier = [context.repo().owner, context.repo().repo, branch].join('_');
 
-    // Read yaml from cache
-    let yaml;
-    release = await mutex.acquire();
-    try {
-      yaml = yamlMap.get(identifier);
-    } finally {
-      release();
+    // Read yaml from main branch
+    let yaml = await retrieveYaml(context, context.repo().repo, 'main');
+
+    let headSha = context.payload.after;
+    if (yaml.cd.branch === undefined) {
+      await cd(yaml, context, headSha, 'main');
+    } else if (yaml.cd.branch === branch) {
+      await cd(yaml, context, headSha, branch);
     }
-
-    if (yaml === undefined) {
-      // get yaml?
-    }
-
-    // headSha = context.payload.after
-
-    /*if (yaml.cd.branch === branch) {
-      //await cd(yaml, context, headSha, branch)
-    }*/
-
   })
 
   app.on(["pull_request.opened", "pull_request.synchronize", "pull_request.reopened"] , async (context) => {
@@ -78,7 +68,7 @@ module.exports = (app) => {
       return;
     }
 
-    // TODO validation of yaml
+    // Validation of yaml
     const isValid = validateYaml(yaml);
 
     if (!isValid) {
@@ -87,11 +77,11 @@ module.exports = (app) => {
     }
 
     // Cache the yaml
-    const release = await mutex.acquire();
+    let release = await mutex.acquire();
     try {
-      yamlMap.set([context.repo().owner, repoName, branch].join('_'), yaml)
+      yamlMap.set([context.repo().owner, repoName, branch].join('_'), yaml);
     } finally {
-      release()
+      release();
     }
 
     await createCommitStatus(context, headSha, "success", "successfully fetched and validated yaml", "custom-ci/pre-build");
@@ -126,10 +116,12 @@ module.exports = (app) => {
 
       // merge pr when yaml says merge auto
       if (yaml.cd.merge === "auto") {
-
+        await context.octokit.rest.pulls.merge({
+          owner: context.repo().owner,
+          repo: context.repo().repo,
+          pull_number: context.payload.number
+        })
       }
-
-      // await cd(yaml, context, headSha, branch)
 
       return;
     }
@@ -147,6 +139,15 @@ module.exports = (app) => {
         await context.octokit.issues.createComment(params);
 
         await createCommitStatus(context, headSha, "error", "something went wrong, please check error message", "custom-ci/github-actions");
+
+        return;
+      }
+
+      release = await mutex.acquire();
+      try {
+        ciRunPR.set([context.repo().owner, repoName, branch, headSha].join('_'), context.payload.number);
+      } finally {
+        release();
       }
     }
   });
@@ -190,9 +191,27 @@ module.exports = (app) => {
 
     // merge pr for which the ci run was executed
     if (yaml.cd.merge === "auto") {
-      // retrieve which pr should be merged
+      let pr;
+      release = await mutex.acquire();
+      try {
+        pr = ciRunPR.get([identifier, headSha].join('_'));
+      } finally {
+        release();
+      }
+
+      await context.octokit.rest.pulls.merge({
+        owner: context.repo().owner,
+        repo: context.repo().repo,
+        pull_number: pr
+      }).then(async _ => {
+        release = await mutex.acquire();
+        try {
+          ciRunPR.delete([identifier, headSha].join('_'));
+        } finally {
+          release();
+        }
+      })
     }
-    // await cd(yaml, context, headSha, context.payload.workflow_run.head_branch)
   });
 };
 
@@ -244,6 +263,8 @@ async function cd(yaml, context, headSha, branch) {
 
 async function getInstallationToken(context) {
   const installations = await context.octokit.rest.apps.listInstallations().then(r => r.data);
+
+  console.log(installations);
 
   const installation_id = installations[0].id
 
@@ -399,7 +420,7 @@ function validateYaml(yaml) {
         return false;
       }
       // github actions requirements
-    } else if (yaml.ci.provider === "github actions") {
+    } else if (yaml.ci.provider === "github-actions") {
       if (yaml.ci.workflow_file_name === undefined) {
         return false;
       }
