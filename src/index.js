@@ -13,7 +13,13 @@ const tokenMap = new Map();
 const yamlMap = new Map();
 let cdRun = [];
 let ciRunPR = new Map();
-const mutex = new Mutex();
+
+const ciRunPRMutex = new Mutex();
+const cdRunMutex = new Mutex();
+const yamlMapMutex = new Mutex();
+const tokenMapMutex = new Mutex();
+const cdMutex = new Mutex();
+
 
 // Probot
 module.exports = (app) => {
@@ -76,7 +82,7 @@ module.exports = (app) => {
     }
 
     // Cache the yaml
-    let release = await mutex.acquire();
+    let release = await yamlMapMutex.acquire();
     try {
       yamlMap.set([context.repo().owner, repoName, branch].join('_'), yaml);
     } finally {
@@ -142,7 +148,7 @@ module.exports = (app) => {
         return;
       }
 
-      release = await mutex.acquire();
+      release = await ciRunPRMutex.acquire();
       try {
         ciRunPR.set([context.repo().owner, repoName, branch, headSha].join('_'), context.payload.number);
       } finally {
@@ -158,7 +164,7 @@ module.exports = (app) => {
     const identifier = [context.repo().owner, context.repo().repo, context.payload.workflow_run.head_branch].join('_');
     const headSha = context.payload.workflow_run.head_sha;
 
-    let release = await mutex.acquire();
+    let release = await cdRunMutex.acquire();
     let isCDRun = false;
     try {
       if (cdRun.indexOf(identifier) !== -1) {
@@ -181,7 +187,7 @@ module.exports = (app) => {
 
     // Read yaml from cache
     let yaml;
-    release = await mutex.acquire();
+    release = await yamlMapMutex.acquire();
     try {
       yaml = yamlMap.get(identifier);
     } finally {
@@ -191,7 +197,7 @@ module.exports = (app) => {
     // merge pr for which the ci run was executed
     if (yaml.cd.merge === "auto") {
       let pr;
-      release = await mutex.acquire();
+      release = await ciRunPRMutex.acquire();
       try {
         pr = ciRunPR.get([identifier, headSha].join('_'));
       } finally {
@@ -203,7 +209,7 @@ module.exports = (app) => {
         repo: context.repo().repo,
         pull_number: pr
       }).then(async _ => {
-        release = await mutex.acquire();
+        release = await ciRunPRMutex.acquire();
         try {
           ciRunPR.delete([identifier, headSha].join('_'));
         } finally {
@@ -224,9 +230,9 @@ machine git.heroku.com
     password ${apiKey}
 EOF`;
 
-const addRemote = (appName) => {
-  execSync("heroku git:remote -a " + appName);
-  execSync("git push heroku main")
+const addRemoteAndDeploy = (appName, branch, dir, force) => {
+  execSync("heroku git:remote -a " + appName, {cwd: dir});
+  execSync(`git push heroku ${branch}:main ${force}`, {cwd: dir});
 }
 
 async function retrieveYaml(context, repoName) {
@@ -239,14 +245,6 @@ async function retrieveYaml(context, repoName) {
       .catch(error => error.name);
 }
 
-async function getGithubSecret(context, heroku_api_key_secret_name) {
-  return await context.octokit.rest.actions.getRepoSecret({
-    owner: context.repo().owner,
-    repo: context.repo().repo,
-    secret_name: heroku_api_key_secret_name
-  }).then(result => console.log("result")).catch(error => console.error(error))
-}
-
 async function cd(yaml, context, headSha, branch) {
   const provider = yaml.cd.provider;
 
@@ -254,9 +252,40 @@ async function cd(yaml, context, headSha, branch) {
   if (provider === undefined) {
     console.log("chose custom cd");
 
-    //let secret = await getGithubSecret(context, yaml.cd.heroku_secret);
+    await createCommitStatus(context, headSha, "pending", "starting heroku deploy", "custom-cd/heroku-deploy");
 
-    // execSync(createCatFile(yaml.cd.heroku_email, secret));
+    const release = await cdMutex.acquire();
+    try {
+      let secret = process.env.HEROKU_API_KEY;
+
+      // for heroku authentication
+      execSync(createCatFile(yaml.cd.heroku_mail, secret));
+
+      // clone repo
+      let token = await getInstallationToken(context);
+
+      execSync(`git clone --branch ${branch} https://x-access-token:${token}@github.com/${context.repo().owner}/${context.repo().repo}.git ./Clones/${context.repo().owner}/${context.repo().repo}/`)
+
+      // add heroku remote and deploy repo branch to heroku
+      try {
+        addRemoteAndDeploy(yaml.cd.heroku_app, branch, `Clones/${context.repo().owner}/${context.repo().repo}/`,"");
+      } catch (e) {
+        console.error(`Failed while deploying to heroku. Trying to force it. Not recommended though. ${e}`)
+
+        addRemoteAndDeploy(yaml.cd.heroku_app, branch, `Clones/${context.repo().owner}/${context.repo().repo}/`,"--force")
+      }
+
+      // delete repo
+      execSync(`rm -r ./Clones/${context.repo().owner}/${context.repo().repo}`)
+
+      await createCommitStatus(context, headSha, "success", "heroku deploy was successful", "custom-cd/heroku-deploy");
+    } catch (e) {
+      await createCommitStatus(context, headSha, "error", "deploying to heroku failed! Read error message for more", "custom-cd/heroku-deploy");
+
+      execSync(`rm -r ./Clones/${context.repo().owner}/${context.repo().repo}`);
+    } finally {
+      release();
+    }
 
     return;
   }
@@ -265,7 +294,7 @@ async function cd(yaml, context, headSha, branch) {
   if (yaml.cd.provider === "github-actions") {
     console.log("chose github-actions for cd");
 
-    const release = await mutex.acquire();
+    const release = await cdRunMutex.acquire();
     try {
       cdRun.push([context.repo().owner, context.repo().repo, branch].join('_'));
     } finally {
@@ -311,7 +340,7 @@ async function getInstallationToken(context) {
       installation_id: installation_id
     }).then(r => r.data);
 
-    const release = await mutex.acquire();
+    const release = await tokenMapMutex.acquire();
     try {
       tokenMap.set(installation_id, data)
     } finally {
