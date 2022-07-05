@@ -1,12 +1,12 @@
 ci:
-  language: node:16-slim
+  language: node
   steps:
     - npm install
     - npm run build --if-present
     - npm test
 cd:
-  heroku_api_key: "heroku api key"
-  heroku_app_name: "heroku app name" #Must be unique in Heroku
-  heroku_email: "heroku email"
-
+  branch: master
+  heroku_secret: HEROKU_API_KEY
+  heroku_mail: legralisandro@gmail.com
+  heroku_app: cubalatino-ci-cd-testing
 
