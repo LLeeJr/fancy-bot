@@ -33,12 +33,11 @@ module.exports = (app) => {
     const branch = context.payload.ref.split("/")[2];
 
     // Read yaml from main branch
-    let yaml = await retrieveYaml(context, context.repo().repo, 'main');
+    let yaml = await retrieveYaml(context, context.repo().repo);
 
+    // if the push happened on the deploy branch then do cd
     let headSha = context.payload.after;
-    if (yaml.cd.branch === undefined) {
-      await cd(yaml, context, headSha, 'main');
-    } else if (yaml.cd.branch === branch) {
+    if (yaml.cd.branch === branch) {
       await cd(yaml, context, headSha, branch);
     }
   })
@@ -50,8 +49,8 @@ module.exports = (app) => {
 
     await createCommitStatus(context, headSha, "pending", "fetch yaml from branch", "custom-ci/pre-build");
 
-    // Get yaml file from pr branch and decode it
-    const yaml = await retrieveYaml(context, repoName, branch);
+    // Get yaml file from main branch and decode it
+    const yaml = await retrieveYaml(context, repoName);
 
     app.log.info("After fetching yaml:");
 
@@ -216,15 +215,36 @@ module.exports = (app) => {
 };
 
 // Utilities
-async function retrieveYaml(context, repoName, branch) {
+const createCatFile = (email, apiKey) => `cat >~/.netrc <<EOF
+machine api.heroku.com
+    login ${email}
+    password ${apiKey}
+machine git.heroku.com
+    login ${email}
+    password ${apiKey}
+EOF`;
+
+const addRemote = (appName) => {
+  execSync("heroku git:remote -a " + appName);
+  execSync("git push heroku main")
+}
+
+async function retrieveYaml(context, repoName) {
   return await context.octokit.rest.repos.getContent({
     owner: context.repo().owner,
     repo: repoName,
-    path: 'ci_cd.yml',
-    ref: branch
+    path: 'ci_cd.yml'
   })
       .then(result => readYaml(result.data.content))
       .catch(error => error.name);
+}
+
+async function getGithubSecret(context, heroku_api_key_secret_name) {
+  return await context.octokit.rest.actions.getRepoSecret({
+    owner: context.repo().owner,
+    repo: context.repo().repo,
+    secret_name: heroku_api_key_secret_name
+  }).then(result => console.log("result")).catch(error => console.error(error))
 }
 
 async function cd(yaml, context, headSha, branch) {
@@ -233,6 +253,11 @@ async function cd(yaml, context, headSha, branch) {
   // deploy to heroku
   if (provider === undefined) {
     console.log("chose custom cd");
+
+    //let secret = await getGithubSecret(context, yaml.cd.heroku_secret);
+
+    // execSync(createCatFile(yaml.cd.heroku_email, secret));
+
     return;
   }
 
@@ -427,13 +452,18 @@ function validateYaml(yaml) {
     }
 
     // check cd part
-    // if (yaml.cd.merge === undefined || yaml.cd.branch === undefined) {
-    //   return false;
-    // } These fields are optional doesn't have to be checked
+    if (yaml.cd.branch === undefined) {
+      return false;
+    }
+
+    // if merge option isn't undefined, then it should only equal auto or manual, if not merge option isn't valid
+    if (yaml.cd.merge !== undefined && (yaml.cd.merge !== "auto" || yaml.cd.merge !== "manual")) {
+      return false;
+    }
 
     // requirements for own cd
     if (yaml.cd.provider === undefined) {
-      if (yaml.cd.heroku_api_key === undefined || yaml.cd.heroku_email === undefined || yaml.cd.heroku_app_name === undefined) {
+      if (yaml.cd.heroku_secret === undefined || yaml.cd.heroku_mail === undefined || yaml.cd.heroku_app === undefined) {
         return false;
       }
       // github actions requirements
