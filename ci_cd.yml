@@ -6,7 +6,7 @@ ci:
     - npm test
 cd:
   branch: i dont exist
-  heroku_secret: HEROKU_API_KEY
+  heroku_encrypted_api_key: HEROKU_API_KEY
   heroku_mail: legralisandro@gmail.com
   heroku_app: cubalatino-ci-cd-testing
 
