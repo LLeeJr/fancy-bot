@@ -18,7 +18,6 @@ const ciRunPRMutex = new Mutex();
 const cdRunMutex = new Mutex();
 const yamlMapMutex = new Mutex();
 const tokenMapMutex = new Mutex();
-const cdMutex = new Mutex();
 
 
 // Probot
@@ -43,6 +42,8 @@ module.exports = (app) => {
 
     // if the push happened on the deploy branch then do cd
     let headSha = context.payload.after;
+
+    // TODO check when yaml.ci.on is set to push, do ci first and then cd
     if (yaml.cd.branch === branch) {
       await cd(yaml, context, headSha, branch);
     }
@@ -90,6 +91,9 @@ module.exports = (app) => {
     }
 
     await createCommitStatus(context, headSha, "success", "successfully fetched and validated yaml", "custom-ci/pre-build");
+
+    // If yaml.ci.on is set to push don't do ci here
+    if (yaml.ci.on !== undefined && yaml.ci.on === "push") return
 
     // Check if a provider was chosen if not use own ci tool
     if (yaml.ci.provider === undefined) {
@@ -221,20 +225,6 @@ module.exports = (app) => {
 };
 
 // Utilities
-const createCatFile = (email, apiKey) => `cat >~/.netrc <<EOF
-machine api.heroku.com
-    login ${email}
-    password ${apiKey}
-machine git.heroku.com
-    login ${email}
-    password ${apiKey}
-EOF`;
-
-const addRemoteAndDeploy = (appName, branch, dir, force) => {
-  execSync("heroku git:remote -a " + appName, {cwd: dir});
-  execSync(`git push heroku ${branch}:main ${force}`, {cwd: dir});
-}
-
 async function retrieveYaml(context, repoName) {
   return await context.octokit.rest.repos.getContent({
     owner: context.repo().owner,
@@ -254,38 +244,19 @@ async function cd(yaml, context, headSha, branch) {
 
     await createCommitStatus(context, headSha, "pending", "starting heroku deploy", "custom-cd/heroku-deploy");
 
-    const release = await cdMutex.acquire();
-    try {
-      let secret = process.env.HEROKU_API_KEY;
+    let secret = process.env.HEROKU_API_KEY;
 
-      // for heroku authentication
-      execSync(createCatFile(yaml.cd.heroku_mail, secret));
+    // clone repo
+    let token = await getInstallationToken(context);
 
-      // clone repo
-      let token = await getInstallationToken(context);
+    // create dockerfile for heroku deploy
+    createHerokuDockerfile(token, branch, context.repo().owner, context.repo().repo, yaml.cd.heroku_app, yaml.cd.heroku_mail, secret);
 
-      execSync(`git clone --branch ${branch} https://x-access-token:${token}@github.com/${context.repo().owner}/${context.repo().repo}.git ./Clones/${context.repo().owner}/${context.repo().repo}/`)
+    let result = createImageAndLog(undefined, context.repo().repo, branch, "Dockerfile.heroku")
 
-      // add heroku remote and deploy repo branch to heroku
-      try {
-        addRemoteAndDeploy(yaml.cd.heroku_app, branch, `Clones/${context.repo().owner}/${context.repo().repo}/`,"");
-      } catch (e) {
-        console.error(`Failed while deploying to heroku. Trying to force it. Not recommended though. ${e}`)
+    await createCommitStatus(context, headSha, result.state, result.description, "custom-cd/heroku-deploy");
 
-        addRemoteAndDeploy(yaml.cd.heroku_app, branch, `Clones/${context.repo().owner}/${context.repo().repo}/`,"--force")
-      }
-
-      // delete repo
-      execSync(`rm -r ./Clones/${context.repo().owner}/${context.repo().repo}`)
-
-      await createCommitStatus(context, headSha, "success", "heroku deploy was successful", "custom-cd/heroku-deploy");
-    } catch (e) {
-      await createCommitStatus(context, headSha, "error", "deploying to heroku failed! Read error message for more", "custom-cd/heroku-deploy");
-
-      execSync(`rm -r ./Clones/${context.repo().owner}/${context.repo().repo}`);
-    } finally {
-      release();
-    }
+    // TODO error message for user when heroku didn't throw err message
 
     return;
   }
@@ -318,7 +289,7 @@ async function cd(yaml, context, headSha, branch) {
 async function getInstallationToken(context) {
   const installations = await context.octokit.rest.apps.listInstallations().then(r => r.data);
 
-  console.log(installations);
+  //console.log(installations);
 
   const installation_id = installations[0].id
 
@@ -355,12 +326,11 @@ async function getInstallationToken(context) {
 }
 
 function createDockerfile(yaml, token, branch, owner, repoName) {
-  let dockerfile = `FROM ${yaml.ci.language}\n`;
-  dockerfile += "RUN apt-get update\nRUN apt-get -y install git\n"
-  dockerfile += `RUN git clone --branch ${branch} https://x-access-token:${token}@github.com/${owner}/${repoName}.git\n`
-
-  // Remove next line to force error
-  dockerfile += `WORKDIR ${repoName}/\n`
+  let dockerfile = `FROM ${yaml.ci.language}
+  RUN apt-get update
+  RUN apt-get -y install git
+  RUN git clone --branch ${branch} https://x-access-token:${token}@github.com/${owner}/${repoName}.git
+  WORKDIR ${repoName}/\n`
 
   for (let step of yaml.ci.steps) {
     dockerfile += `RUN ${step}\n`;
@@ -371,41 +341,63 @@ function createDockerfile(yaml, token, branch, owner, repoName) {
   fs.writeFileSync(`./Dockerfiles/${repoName}/${branch}/Dockerfile`, dockerfile);
 }
 
-function createImageAndLog(steps, repoName, branch) {
+function createHerokuDockerfile(token, branch, owner, repoName, appName, mail, api_key) {
+  let dockerfile = `FROM alpine
+  RUN apk update
+  RUN apk add curl bash git npm
+  RUN curl https://cli-assets.heroku.com/install.sh | sh
+  RUN git clone --branch ${branch} https://x-access-token:${token}@github.com/${owner}/${repoName}.git
+  RUN touch .netcr
+  RUN printf "machine api.heroku.com\\n\\tlogin ${mail}\\n\\tpassword ${api_key}\\nmachine git.heroku.com\\n\\tlogin ${mail}\\n\\tpassword ${api_key}\\n" >> .netrc
+  RUN mv .netrc ~
+  WORKDIR ${repoName}
+  RUN heroku git:remote -a ${appName}
+  RUN git push heroku ${branch}:main`;
+
+  fs.mkdirSync(`./Dockerfiles/${repoName}/${branch}`, {recursive: true});
+
+  fs.writeFileSync(`./Dockerfiles/${repoName}/${branch}/Dockerfile.heroku`, dockerfile);
+}
+
+function createImageAndLog(steps, repoName, branch, dockerfile = "Dockerfile") {
   let state, description, log;
 
+  const tag = dockerfile === "Dockerfile" ? `${repoName}/${branch}` : `${repoName}/${branch}/cd`
+
   try {
-    callCommand(`docker build -t ${repoName}/${branch} -f ./Dockerfiles/${repoName}/${branch}/Dockerfile .`, getLogOptions(repoName, branch));
+    callCommand(`docker build -t ${tag} -f ./Dockerfiles/${repoName}/${branch}/${dockerfile} .`, getLogOptions(repoName, branch, dockerfile));
 
     state = "success";
-    description = 'Build and tests were successfully completed';
+    description = dockerfile === "Dockerfile" ? 'Build and tests were successfully completed' : "Deployment to heroku was successful";
     try {
-      callCommand(`docker image rm ${repoName}/${branch}`, {});
+      callCommand(`docker image rm ${tag}`, {});
     } catch (e) {
       console.log("Help! Couldn't delete docker image");
     }
   } catch (e) {
-    const errLog = fs.readFileSync(`./Dockerfiles/${repoName}/${branch}/err.log`, 'utf8');
+    const errLog = fs.readFileSync(`./Dockerfiles/${repoName}/${branch}/${dockerfile === "Dockerfile" ? "err.log" : "err.heroku.log"}`, 'utf8');
 
-    const outLog = fs.readFileSync(`./Dockerfiles/${repoName}/${branch}/out.log`, 'utf8')
+    const outLog = fs.readFileSync(`./Dockerfiles/${repoName}/${branch}/${dockerfile === "Dockerfile" ? "out.log" : "out.heroku.log"}`, 'utf8')
 
     // Search for which step failed
-    let stepIndex = -1;
-    let stringIndex = -1;
-    for (let step of steps) {
-      if (outLog.indexOf(step) !== -1) {
-        stepIndex++;
-        stringIndex = outLog.indexOf(step);
-      } else {
-        break;
+    let outLogShortened;
+    if (dockerfile === "Dockerfile") {
+      let stepIndex = -1;
+      let stringIndex = -1;
+      for (let step of steps) {
+        if (outLog.indexOf(step) !== -1) {
+          stepIndex++;
+          stringIndex = outLog.indexOf(step);
+        } else {
+          break;
+        }
       }
+      outLogShortened = outLog.substring(stringIndex + steps[stepIndex].length);
     }
-
-    const outLogShortened = outLog.substring(stringIndex + steps[stepIndex].length);
 
     log = errLog + outLogShortened;
     state = "error";
-    description = `Failed building/ testing. See log comment for more details`;
+    description = dockerfile === "Dockerfile" ? `Failed building/ testing. See log comment for more details` : "Failed deploying to heroku. Check heroku deployment logs";
   }
 
   return {
@@ -415,11 +407,11 @@ function createImageAndLog(steps, repoName, branch) {
   }
 }
 
-function getLogOptions(repoName, branch) {
+function getLogOptions(repoName, branch, dockerfile) {
   return {stdio: [
     0,
-    fs.openSync(`./Dockerfiles/${repoName}/${branch}/out.log`, 'w'),
-    fs.openSync(`./Dockerfiles/${repoName}/${branch}/err.log`, 'w')
+    fs.openSync(`./Dockerfiles/${repoName}/${branch}/${dockerfile === "Dockerfile" ? "out.log" : "out.heroku.log"}`, 'w'),
+    fs.openSync(`./Dockerfiles/${repoName}/${branch}/${dockerfile === "Dockerfile" ? "err.log" : "err.heroku.log"}`, 'w')
   ]
   }
 }
@@ -492,7 +484,7 @@ function validateYaml(yaml) {
 
     // requirements for own cd
     if (yaml.cd.provider === undefined) {
-      if (yaml.cd.heroku_secret === undefined || yaml.cd.heroku_mail === undefined || yaml.cd.heroku_app === undefined) {
+      if (yaml.cd.heroku_encrypted_api_key === undefined || yaml.cd.heroku_mail === undefined || yaml.cd.heroku_app === undefined) {
         return false;
       }
       // github actions requirements
