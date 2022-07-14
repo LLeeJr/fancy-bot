@@ -1,6 +1,5 @@
 node_modules
 npm-debug.log
-*.pem
 !mock-cert.pem
 .env
 coverage
@@ -11,3 +10,4 @@ github-actions-examples
 /notes.txt
 .idea
 /Dockerfiles/
+/private-key.pem

@@ -16,10 +16,20 @@ npm start
 
 ```sh
 # 1. Build container
-docker build -t fancy-bot .
+docker-compose up -d
+```
 
-# 2. Start container
-docker run -e APP_ID=<app-id> -e PRIVATE_KEY=<pem-value> fancy-bot
+# Deploy with Heroku
+
+```sh
+# 1. Download public key from this repo (public-key.pem)
+
+# 2. Get your API-Key from heroku and save it to a txt file
+
+# 3. Encrypt the text file with public key with following command
+openssl rsautl -encrypt -pubin -inkey pub.key -in api_key.txt | base64 > encrypted_api_key.txt
+
+# 4. Save the text of encrypted_api_key.txt in ci_cd.yml with the line breaks replaced with \n
 ```
 
 ## Contributing
